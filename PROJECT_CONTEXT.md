@@ -86,17 +86,21 @@ farmanprinters/
 - ✅ Document numbering prefix for bills changed `BILL` → `INV` (e.g. `FPP-INV-2026-001`), padding `6` → `3` digits.
 - ✅ `Client.strnNumber` added; `prisma/seed.ts` rewritten for "Farman Printing Press - Islamabad", an ADMIN + DESIGNER staff login, the "Society for Education & Development" NGO client with a PKR 45,000 opening ledger balance, and the 6 requested catalog items.
 - ✅ Re-verified clean `prisma validate`, `tsc --noEmit`, `eslint`, and `next build` after the refactor.
-- ⏳ Not yet done this session: actually running `prisma migrate dev` / `db:seed` against a live database — waiting on a `DATABASE_URL`/`DIRECT_URL` connection string (no local Postgres/Docker in this environment).
+
+### Session Milestone 3 (Live Database Provisioned, Migrated & Seeded)
+- ✅ Connected to a real Supabase Postgres project (`xjgfslpifpndchbdpowx`); `fpp-erp/.env` populated with `DATABASE_URL`/`DIRECT_URL` (password percent-encoded — it contains `+ # %`, each of which breaks URI parsing unencoded), `SUPABASE_URL`, and the correct `SUPABASE_SERVICE_ROLE_KEY` (had to catch and correct two mismatched-project key pastes along the way — always decode/verify a Supabase JWT's `ref` claim against the confirmed project before trusting it).
+- ✅ Deleted the stale hand-authored `prisma/migrations/0001_init` (predated this session's schema rework, never applied anywhere) and generated a fresh one straight from current `schema.prisma` via `npx prisma migrate dev --name init` — applied cleanly.
+- ✅ `npm run db:seed` populated the live DB successfully.
+- ✅ Added `prisma/verify.ts` (`npm run db:verify`) — a keeper smoke-test script, not scratch: joins Press → User → Client → CatalogItem → Order → ClientLedgerEntry and bcrypt-checks the seeded admin password the same way `auth-options.ts`'s Credentials provider does. All checks pass against the live DB.
 
 ---
 
 ## 5. Next Immediate Objectives & Open Tasks
 
-1. **Database Migration & Seeding:** Run Prisma migration against live PostgreSQL and seed initial Pakistani print shop items (Panaflex, Shields, Stamps) and sample NGO client. *(Blocked on a real `DATABASE_URL`/`DIRECT_URL`.)*
-2. **Paperwork UI Testing:** Verify interactive creation of Bills/Invoices and automatic posting to Client Ledger — needs the live DB from (1) first.
-3. **Magic-link email delivery:** The Email provider is wired correctly but `EMAIL_SERVER`/`EMAIL_FROM` in `.env` still need real SMTP creds (Ethereal/Mailtrap for dev, a real transactional provider for prod) before a magic link actually sends.
-4. **Inter-Press Sharing:** End-to-end testing of B2B design file sharing between partner presses — needs a second seeded Press + an `ACTIVE` `PressPartnership` to test against.
-5. **Dashboard catalog management UI:** `settings/page.tsx` is still a placeholder — no staff-facing CRUD for `ProductCategory`/`CatalogItem` pricing yet.
+1. **Paperwork UI Testing:** Verify interactive creation of Bills/Invoices and automatic posting to Client Ledger against the now-live DB (`npm run dev`).
+2. **Magic-link email delivery:** The Email provider is wired correctly but `EMAIL_SERVER`/`EMAIL_FROM` in `.env` are still placeholders — need real SMTP creds (Ethereal/Mailtrap for dev, a real transactional provider for prod) before a magic link actually sends. `SUPABASE_STORAGE_BUCKET="fpp-assets"` also still needs to actually exist in the Supabase project's Storage tab before uploads work.
+3. **Inter-Press Sharing:** End-to-end testing of B2B design file sharing between partner presses — needs a second seeded Press + an `ACTIVE` `PressPartnership` to test against.
+4. **Dashboard catalog management UI:** `settings/page.tsx` is still a placeholder — no staff-facing CRUD for `ProductCategory`/`CatalogItem` pricing yet.
 
 ---
 
