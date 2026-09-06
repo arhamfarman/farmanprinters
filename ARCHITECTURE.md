@@ -3,24 +3,21 @@
 ## 0. Build status
 
 Every file in the tree below now exists and the project typechecks,
-lints, and `next build`s cleanly (verified against a dummy `DATABASE_URL`
-— no live Postgres is provisioned yet, so nothing has actually round-
-tripped through a real database). A few files exist beyond what's listed
-below because the pieces they support turned out to need them:
+lints, and `next build`s cleanly. A few files exist beyond what's listed
+in the tree because the pieces they support turned out to need them:
 `server/actions/client-actions.ts`, `challan-actions.ts`,
 `network-actions.ts`, `catalog-actions.ts`, `inquiry-actions.ts`,
-`portal-actions.ts`, and `server/auth-options.ts` + `types/next-auth.d.ts`
-(the actual NextAuth wiring the auth.ts skeleton pointed at).
+`portal-actions.ts`, and `server/auth-options.ts` + `types/next-auth.d.ts`.
+
+Both auth flows are now really wired: staff sign in via Credentials
+(`User.passwordHash`), and the client portal signs in passwordlessly via
+NextAuth's Email (magic-link) provider backed by a real Prisma Adapter
+(`Account`/`Session`/`VerificationToken` — see §5). CLIENT is a `UserRole`
+on the same User table, not a second parallel login system.
 
 **Still open, deliberately:**
-- No Postgres has been provisioned — `.env` needs a real `DATABASE_URL`/
-  `DIRECT_URL`, then `npm run db:migrate` and `npm run db:seed`.
-- The client portal is read-only-scaffolded but has no working sign-in:
-  `auth-options.ts` only wires a staff Credentials provider (User has a
-  passwordHash to check against). Client has no password/token field, so
-  portal auth needs a real magic-link flow — that needs a NextAuth Prisma
-  Adapter plus the Account/Session/VerificationToken tables schema.prisma
-  doesn't have yet, which is a schema decision, not just wiring.
+- `EMAIL_SERVER`/`EMAIL_FROM` need real SMTP creds to actually send a
+  magic-link email — the provider is correctly wired but silent without them.
 - `components/ui/*` are dependency-free stand-ins (documented inline)
   for the real shadcn CLI output — fine for now, swap in
   `npx shadcn-ui@latest add ...` when Radix-based focus-trapping/animation
@@ -139,13 +136,13 @@ flowchart LR
   A[Public Inquiry Form] -->|creates| B(Inquiry)
   B -->|staff converts| C(Order: INQUIRY)
   C --> D(Order: QUOTATION)
-  D -->|Quotation PDF sent| E(Order: DESIGN_APPROVAL)
-  E -->|client approves artwork| F(Order: IN_PRODUCTION)
-  F --> G(Order: READY_FOR_DELIVERY)
-  G -->|Delivery Challan printed| H(Order: INVOICED)
-  H -->|Invoice + Payment recorded| I(Order: COMPLETED)
-  H -->|posts debit| J[(ClientLedgerEntry)]
-  I -->|payment posts credit| J
+  D -->|client approves artwork| E(Order: APPROVED)
+  E --> F(Order: IN_PRODUCTION)
+  F -->|Delivery Challan printed| G(Order: READY)
+  G -->|Challan marked delivered| H(Order: DELIVERED)
+  H -->|staff closes out the job| I(Order: COMPLETED)
+  J[Invoice issued] -->|posts debit, any pipeline stage| K[(ClientLedgerEntry)]
+  L[Payment recorded] -->|posts credit| K
 ```
 
 Every status transition writes an `OrderStatusEvent` row (for pipeline
@@ -153,6 +150,9 @@ analytics) and every `Invoice`/`Payment` writes a `ClientLedgerEntry` inside
 the same DB transaction (`src/server/actions/ledger-actions.ts`), so the
 ledger balance is never derived by summing invoices minus payments on the
 fly — it's authoritative and append-only, like the paper ledger it replaces.
+Billing is deliberately decoupled from the pipeline stage (a press may bill
+in advance or on net terms), so Invoice/Payment feed the ledger on their own
+schedule rather than forcing a specific `Order.status`.
 
 ## 4. Multi-tenancy & inter-press sharing
 
@@ -169,16 +169,28 @@ fly — it's authoritative and append-only, like the paper ledger it replaces.
 
 ## 5. Auth & RBAC
 
-- NextAuth (credentials or magic-link) issues a session carrying
-  `{ userId, pressId, role }` for staff, or `{ clientId, pressId }` for
-  portal users.
+- `UserRole` is `ADMIN | DESIGNER | PRODUCTION | ACCOUNTANT | CLIENT` — one
+  User table for staff and portal logins alike (see schema.prisma). CLIENT
+  is a role, not a separate auth system: a CLIENT user carries `clientId`
+  pointing at the Client business record its portal view is scoped to.
+- NextAuth issues one session shape everywhere:
+  `{ userId, pressId, role, clientId }` (`clientId` is null for staff).
+  Staff sign in via the Credentials provider (email + `passwordHash`);
+  CLIENT users sign in passwordlessly via the Email (magic-link) provider.
+  A CLIENT User row is only ever created by a staff member, through
+  `grantClientPortalAccess` (`client-actions.ts`) — the Email provider's
+  Prisma Adapter has `createUser` overridden to always throw, so an
+  unprovisioned email can never self-register a login (see
+  `auth-options.ts`).
 - `middleware.ts` matches `/dashboard/:path*` and `/client/:path*`, denies
-  unauthenticated requests, and coarse-gates by role (e.g. only
-  `OWNER_ADMIN`/`ACCOUNTANT` may hit `/dashboard/clients/*/ledger`).
-- Fine-grained checks (e.g. a `GRAPHIC_DESIGNER` can update `designerId`'s
-  own orders but not void an invoice) live next to the mutation in
+  unauthenticated requests and non-staff roles on `/dashboard`, non-CLIENT
+  roles on `/client`, and coarse-gates by role within `/dashboard` (e.g.
+  only `ADMIN`/`ACCOUNTANT` may hit `/dashboard/clients/*/ledger`).
+- Fine-grained checks (e.g. a `DESIGNER` can update `designerId`'s own
+  orders but not void an invoice) live next to the mutation in
   `src/server/actions/*`, via a `requireRole()` guard — see
-  `order-actions.ts` below.
+  `order-actions.ts` below. Portal-side actions (`portal-actions.ts`) use
+  the equivalent `requireClientSession()` guard instead.
 
 ## 6. PDF generation matches the physical pads exactly
 

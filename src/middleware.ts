@@ -2,22 +2,24 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import type { UserRole } from "@prisma/client";
 
-// Coarse RBAC gate for /dashboard/*: matches src/server/auth.ts's
-// StaffSession/ClientPortalSession split — a token carrying `role` is
-// staff, one carrying only `clientId` is a portal user, and either missing
-// bounces to sign-in. Fine-grained checks (who can void an invoice, who can
-// edit someone else's designer assignment) stay in the server actions via
-// requireRole(), not here — this layer only answers "can this session even
-// reach this route group at all".
+// Coarse RBAC gate for /dashboard/* and /client/*: matches
+// src/server/auth.ts's single Session shape — CLIENT is a role like any
+// other now (see schema.prisma's User.role), so both branches below check
+// `token.role` explicitly rather than inferring staff-vs-portal from which
+// fields happen to be present. Fine-grained checks (who can void an
+// invoice, who can edit someone else's designer assignment) stay in the
+// server actions via requireRole()/requireClientSession(), not here — this
+// layer only answers "can this session even reach this route group at all".
 const FINANCE_ONLY_PREFIXES = ["/dashboard/clients"];
-const FINANCE_ROLES: UserRole[] = ["OWNER_ADMIN", "ACCOUNTANT"];
+const FINANCE_ROLES: UserRole[] = ["ADMIN", "ACCOUNTANT"];
+const STAFF_ROLES: UserRole[] = ["ADMIN", "DESIGNER", "PRODUCTION", "ACCOUNTANT"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET });
 
   if (pathname.startsWith("/dashboard")) {
-    if (!token || !token.role) {
+    if (!token?.role || !STAFF_ROLES.includes(token.role as UserRole)) {
       return redirectToSignIn(request);
     }
     const isFinanceRoute = FINANCE_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix));
@@ -28,7 +30,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname.startsWith("/client")) {
-    if (!token || !token.clientId) {
+    if (!token || token.role !== "CLIENT" || !token.clientId) {
       return redirectToSignIn(request);
     }
     return NextResponse.next();

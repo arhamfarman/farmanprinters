@@ -15,7 +15,7 @@ export default async function CategoryPage({ params }: { params: { categorySlug:
       {category.description && <p className="text-muted-foreground">{category.description}</p>}
 
       <div className="flex flex-col divide-y divide-border rounded-md border border-border">
-        {category.serviceItems.map((item) => (
+        {category.catalogItems.map((item) => (
           <div key={item.id} className="flex items-center justify-between p-3 text-sm">
             <div>
               <p className="font-medium">{item.name}</p>
@@ -24,7 +24,7 @@ export default async function CategoryPage({ params }: { params: { categorySlug:
             <span className="text-muted-foreground">from {formatPKR(item.defaultRateMinor)} / {item.unit}</span>
           </div>
         ))}
-        {category.serviceItems.length === 0 && (
+        {category.catalogItems.length === 0 && (
           <p className="p-3 text-sm text-muted-foreground">Contact us for pricing on this category.</p>
         )}
       </div>

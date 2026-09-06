@@ -3,24 +3,17 @@ import type { UserRole } from "@prisma/client";
 import { authOptions } from "@/server/auth-options";
 
 /**
- * Shape of the session payload NextAuth issues (see auth-options.ts). Staff
- * sessions carry a role for RBAC; portal (client) sessions carry a clientId
- * instead and never get a role, so `requireRole` naturally rejects them.
+ * Every signed-in user — staff and client-portal alike — reads through
+ * this one shape, because CLIENT is a `role` on the same User table
+ * (see schema.prisma), not a separate login system. `clientId` is only
+ * ever set when `role === "CLIENT"`; every other role gets it as null.
  */
-export type StaffSession = {
-  kind: "staff";
+export type Session = {
   userId: string;
   pressId: string;
   role: UserRole;
+  clientId: string | null;
 };
-
-export type ClientPortalSession = {
-  kind: "client";
-  clientId: string;
-  pressId: string;
-};
-
-export type Session = StaffSession | ClientPortalSession;
 
 export class UnauthorizedError extends Error {
   constructor(message = "Not authorized") {
@@ -29,58 +22,46 @@ export class UnauthorizedError extends Error {
   }
 }
 
-/**
- * Adapts NextAuth's session shape (see auth-options.ts's jwt/session
- * callbacks) to the StaffSession/ClientPortalSession union every server
- * action and API route guards against via requireRole(). Staff sessions
- * carry a role; the client portal (still passwordless-TODO per
- * auth-options.ts) has no session type here yet — the `false` branch is
- * unreachable today but kept so ClientPortalSession stays a real,
- * type-checked case once that provider exists instead of quietly bit-rotting.
- */
+/** Adapts NextAuth's session shape (see auth-options.ts's jwt/session callbacks) to the Session type above. */
 export async function getSession(): Promise<Session | null> {
   const session = await getServerSession(authOptions);
-  if (!session) return null;
-
-  const raw = session as typeof session & { pressId?: string; role?: UserRole };
-  if (!raw.pressId || !raw.role) return null;
+  if (!session?.user?.id || !session.pressId || !session.role) return null;
 
   return {
-    kind: "staff",
-    userId: (raw.user as { id?: string } | undefined)?.id ?? "",
-    pressId: raw.pressId,
-    role: raw.role,
+    userId: session.user.id,
+    pressId: session.pressId,
+    role: session.role,
+    clientId: session.clientId ?? null,
   };
 }
 
 /**
- * Guard used at the top of every server action / route handler that
- * mutates data. Keeping this in one place means "who can void an invoice"
- * is answered by grepping this file, not by re-reading every action.
+ * Guard used at the top of every staff-facing server action / route
+ * handler that mutates data. Keeping this in one place means "who can
+ * void an invoice" is answered by grepping this file, not by re-reading
+ * every action. CLIENT is never in an `allowed` list here, so a portal
+ * session is rejected the same way a signed-out request is.
  */
-export function requireRole(session: Session | null, allowed: UserRole[]): StaffSession {
-  if (!session || session.kind !== "staff") {
-    throw new UnauthorizedError();
-  }
+export function requireRole(session: Session | null, allowed: UserRole[]): Session {
+  if (!session) throw new UnauthorizedError();
   if (!allowed.includes(session.role)) {
     throw new UnauthorizedError(`Role ${session.role} cannot perform this action`);
   }
   return session;
 }
 
-export const ALL_STAFF: UserRole[] = ["OWNER_ADMIN", "ACCOUNTANT", "GRAPHIC_DESIGNER", "PRODUCTION_STAFF", "SALES"];
-export const FINANCE_ROLES: UserRole[] = ["OWNER_ADMIN", "ACCOUNTANT"];
+export const ALL_STAFF: UserRole[] = ["ADMIN", "DESIGNER", "PRODUCTION", "ACCOUNTANT"];
+export const FINANCE_ROLES: UserRole[] = ["ADMIN", "ACCOUNTANT"];
 
 /**
- * Portal-side counterpart to requireRole() — used by the (portal) route
- * group's server actions once a client-portal auth provider exists (see
- * auth-options.ts's TODO). Kept here now so those actions can be written
- * and typed correctly ahead of that provider, rather than guarding
- * ad hoc with `session?.kind === "client"` at each call site.
+ * Portal-side counterpart to requireRole() — every (portal) route group
+ * server action (portal-actions.ts) calls this instead, so a CLIENT
+ * session's queries are always scoped to its own clientId and a staff
+ * session can never wander into portal-only reads by accident.
  */
-export function requireClientSession(session: Session | null): ClientPortalSession {
-  if (!session || session.kind !== "client") {
+export function requireClientSession(session: Session | null): Session & { clientId: string } {
+  if (!session || session.role !== "CLIENT" || !session.clientId) {
     throw new UnauthorizedError();
   }
-  return session;
+  return session as Session & { clientId: string };
 }

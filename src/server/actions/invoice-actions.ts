@@ -15,14 +15,15 @@ import {
 } from "@/lib/validation";
 
 /**
- * Issuing a bill is the one action that touches three tables in one
- * transaction: the Invoice + its line items, the linked Order's status
- * (bumped to INVOICED so the Kanban board reflects it left production),
- * and — via postInvoiceToLedger — a debit on the client's ledger. Doing
- * all three outside a transaction would risk a bill existing with no
- * corresponding ledger entry if the process died in between, which is
- * exactly the kind of silent mismatch the paper ledger books couldn't
- * have (a bill was physically stapled to its ledger line).
+ * Issuing a bill deliberately does NOT move the linked Order's pipeline
+ * status (see schema.prisma's OrderStatus comment) — a press might bill
+ * before delivery (advance) or well after (net terms), so the Kanban
+ * stage is driven by updateOrderStatus()/markChallanDelivered() only. It
+ * still has to be transactional with its own line items, and
+ * postInvoiceToLedger's debit has to land right after: a bill existing
+ * with no corresponding ledger entry is exactly the kind of silent
+ * mismatch the paper ledger books couldn't have (a bill was physically
+ * stapled to its ledger line).
  */
 export async function createInvoice(input: CreateInvoiceInput) {
   const session = requireRole(await getSession(), ALL_STAFF);
@@ -41,34 +42,23 @@ export async function createInvoice(input: CreateInvoiceInput) {
   const subtotalMinor = sumMinor(lineItems.map((li) => li.amountMinor));
   const totalMinor = subtotalMinor - data.discountMinor + data.taxMinor;
 
-  const invoice = await db.$transaction(async (tx) => {
-    const created = await tx.invoice.create({
-      data: {
-        pressId: session.pressId,
-        invoiceNumber,
-        orderId: data.orderId,
-        clientId: data.clientId,
-        issueDate: new Date(),
-        status: "UNPAID",
-        subtotalMinor,
-        discountMinor: data.discountMinor,
-        taxMinor: data.taxMinor,
-        totalMinor,
-        notes: data.notes,
-        createdById: session.userId,
-        lineItems: { create: lineItems },
-      },
-      include: { lineItems: true },
-    });
-
-    if (data.orderId) {
-      await tx.order.update({ where: { id: data.orderId }, data: { status: "INVOICED" } });
-      await tx.orderStatusEvent.create({
-        data: { orderId: data.orderId, toStatus: "INVOICED", changedById: session.userId, note: `Invoice ${invoiceNumber} issued` },
-      });
-    }
-
-    return created;
+  const invoice = await db.invoice.create({
+    data: {
+      pressId: session.pressId,
+      invoiceNumber,
+      orderId: data.orderId,
+      clientId: data.clientId,
+      issueDate: new Date(),
+      status: "UNPAID",
+      subtotalMinor,
+      discountMinor: data.discountMinor,
+      taxMinor: data.taxMinor,
+      totalMinor,
+      notes: data.notes,
+      createdById: session.userId,
+      lineItems: { create: lineItems },
+    },
+    include: { lineItems: true },
   });
 
   await postInvoiceToLedger(invoice.id);

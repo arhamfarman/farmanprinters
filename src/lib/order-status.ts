@@ -3,15 +3,18 @@ import type { OrderStatus } from "@prisma/client";
 /**
  * Single source of truth for the Kanban pipeline: order, label, and color
  * live here so the board, the table view, and the status badge can't drift
- * out of sync with each other.
+ * out of sync with each other. Invoice/DeliveryChallan issuance are
+ * separate documents that don't force a specific stage (see
+ * schema.prisma's OrderStatus comment) — only updateOrderStatus() (and,
+ * for Delivered, markChallanDelivered) moves an order through this list.
  */
 export const ORDER_PIPELINE: { status: OrderStatus; label: string; colorClass: string }[] = [
   { status: "INQUIRY", label: "Inquiry", colorClass: "bg-slate-100 text-slate-700" },
   { status: "QUOTATION", label: "Quotation", colorClass: "bg-amber-100 text-amber-800" },
-  { status: "DESIGN_APPROVAL", label: "Design Approval", colorClass: "bg-violet-100 text-violet-800" },
+  { status: "APPROVED", label: "Approved", colorClass: "bg-violet-100 text-violet-800" },
   { status: "IN_PRODUCTION", label: "In Production", colorClass: "bg-blue-100 text-blue-800" },
-  { status: "READY_FOR_DELIVERY", label: "Ready for Delivery", colorClass: "bg-cyan-100 text-cyan-800" },
-  { status: "INVOICED", label: "Invoiced", colorClass: "bg-orange-100 text-orange-800" },
+  { status: "READY", label: "Ready", colorClass: "bg-cyan-100 text-cyan-800" },
+  { status: "DELIVERED", label: "Delivered", colorClass: "bg-orange-100 text-orange-800" },
   { status: "COMPLETED", label: "Completed", colorClass: "bg-emerald-100 text-emerald-800" },
 ];
 

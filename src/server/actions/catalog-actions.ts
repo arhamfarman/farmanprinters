@@ -27,6 +27,6 @@ export async function getCategoryBySlug(slug: string) {
   const press = await getPublicPress();
   return db.productCategory.findFirstOrThrow({
     where: { pressId: press.id, slug },
-    include: { serviceItems: { where: { isActive: true } } },
+    include: { catalogItems: { where: { isActive: true } } },
   });
 }

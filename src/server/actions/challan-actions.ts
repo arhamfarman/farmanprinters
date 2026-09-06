@@ -46,14 +46,20 @@ export async function createChallan(input: CreateChallanInput) {
   });
 
   if (data.orderId) {
-    await db.order.update({ where: { id: data.orderId }, data: { status: "READY_FOR_DELIVERY" } });
+    await db.order.update({ where: { id: data.orderId }, data: { status: "READY" } });
     revalidatePath(`/dashboard/orders/${data.orderId}`);
   }
   revalidatePath("/dashboard/challans");
   return challan;
 }
 
-/** Records the physical handoff — the two signature lines on the pad. */
+/**
+ * Records the physical handoff — the two signature lines on the pad —
+ * and, if the challan is linked to an order, is what actually advances
+ * that order to DELIVERED (see schema.prisma's OrderStatus comment: the
+ * pipeline moves on real-world events like this one, not on document
+ * issuance alone).
+ */
 export async function markChallanDelivered(input: MarkChallanDeliveredInput) {
   const session = requireRole(await getSession(), ALL_STAFF);
   const data = markChallanDeliveredSchema.parse(input);
@@ -61,12 +67,29 @@ export async function markChallanDelivered(input: MarkChallanDeliveredInput) {
   const challan = await db.deliveryChallan.findUniqueOrThrow({ where: { id: data.challanId } });
   if (challan.pressId !== session.pressId) throw new Error("Challan does not belong to your press");
 
-  const updated = await db.deliveryChallan.update({
-    where: { id: challan.id },
-    data: { status: "DELIVERED", deliveredBy: data.deliveredBy, receivedBy: data.receivedBy },
+  const updated = await db.$transaction(async (tx) => {
+    const result = await tx.deliveryChallan.update({
+      where: { id: challan.id },
+      data: { status: "DELIVERED", deliveredBy: data.deliveredBy, receivedBy: data.receivedBy },
+    });
+
+    if (challan.orderId) {
+      await tx.order.update({ where: { id: challan.orderId }, data: { status: "DELIVERED" } });
+      await tx.orderStatusEvent.create({
+        data: {
+          orderId: challan.orderId,
+          toStatus: "DELIVERED",
+          changedById: session.userId,
+          note: `Challan ${challan.challanNumber} delivered`,
+        },
+      });
+    }
+
+    return result;
   });
 
   revalidatePath(`/dashboard/challans/${challan.id}`);
+  if (challan.orderId) revalidatePath(`/dashboard/orders/${challan.orderId}`);
   return updated;
 }
 

@@ -16,8 +16,11 @@
 // - Money is stored as Int paisa (smallest PKR unit) to avoid float rounding
 //   in ledgers; format with src/lib/currency.ts for display.
 // - Order status enum mirrors the required Kanban pipeline exactly:
-//   Inquiry -> Quotation -> Design Approval -> In Production ->
-//   Ready for Delivery -> Invoiced & Completed.
+//   Inquiry -> Quotation -> Approved -> In Production -> Ready ->
+//   Delivered -> Completed (+ a Cancelled escape hatch off any stage).
+//   Invoice/DeliveryChallan issuance are separate documents that don't
+//   force a specific order status — a bill can be raised before or after
+//   delivery in practice, so only updateOrderStatus() moves the pipeline.
 // =============================================================================
 
 generator client {
@@ -31,80 +34,149 @@ datasource db {
 }
 
 // -----------------------------------------------------------------------
+// NextAuth standard models (Prisma Adapter shape — @next-auth/prisma-adapter)
+// -----------------------------------------------------------------------
+// Required verbatim (field names/casing on the Prisma side, not just the
+// @map'd column names) for @next-auth/prisma-adapter to read/write them.
+// Account+Session back a future OAuth provider even though only
+// Credentials + Email are wired up today; VerificationToken is what makes
+// the client portal's magic-link sign-in possible at all.
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+/// Magic-link tokens for the client portal's passwordless sign-in
+/// (Email provider, see server/auth-options.ts). Staff Credentials
+/// sign-in never touches this table.
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// -----------------------------------------------------------------------
 // Tenancy, identity & access
 // -----------------------------------------------------------------------
 
 /// A single printing press business (tenant). Also the entity a public
 /// catalog page and inquiry form render under.
 model Press {
-  id                String   @id @default(cuid())
-  name              String
-  ntnNumber         String?  @map("ntn_number")
-  logoUrl           String?  @map("logo_url")
-  website           String?
-  email             String?
-  headOfficeAddress String?  @map("head_office_address")
-  branchOfficeAddress String? @map("branch_office_address")
-  phones            String[] // e.g. ["0346-9547770", "0307-7161616"]
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
+  id                  String   @id @default(cuid())
+  name                String
+  ntnNumber           String?  @map("ntn_number")
+  logoUrl             String?  @map("logo_url")
+  website             String?
+  email               String?
+  headOfficeAddress   String?  @map("head_office_address")
+  branchOfficeAddress String?  @map("branch_office_address")
+  phones              String[] // e.g. ["0346-9547770", "0307-7161616"]
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
-  users              User[]
-  clients            Client[]
-  vendors            Vendor[]
-  categories         ProductCategory[]
-  serviceItems       ServiceItem[]
-  inquiries          Inquiry[]
-  orders             Order[]
-  quotations         Quotation[]
-  invoices           Invoice[]
-  challans           DeliveryChallan[]
-  payments           Payment[]
+  users               User[]
+  clients             Client[]
+  vendors             Vendor[]
+  categories          ProductCategory[]
+  catalogItems        CatalogItem[]
+  inquiries           Inquiry[]
+  orders              Order[]
+  quotations          Quotation[]
+  invoices            Invoice[]
+  challans            DeliveryChallan[]
+  payments            Payment[]
   clientLedgerEntries ClientLedgerEntry[]
   vendorLedgerEntries VendorLedgerEntry[]
-  assets             Asset[]
-  documentSequences  DocumentSequence[]
-  partnershipsA      PressPartnership[] @relation("PartnershipPressA")
-  partnershipsB      PressPartnership[] @relation("PartnershipPressB")
-  assetsSharedByMe   SharedAsset[]      @relation("SharedByPress")
-  assetsSharedWithMe SharedAsset[]      @relation("SharedWithPress")
-  auditLogs          AuditLog[]
+  assets              Asset[]
+  documentSequences   DocumentSequence[]
+  partnershipsA       PressPartnership[]  @relation("PartnershipPressA")
+  partnershipsB       PressPartnership[]  @relation("PartnershipPressB")
+  assetsSharedByMe    SharedAsset[]       @relation("SharedByPress")
+  assetsSharedWithMe  SharedAsset[]       @relation("SharedWithPress")
+  auditLogs           AuditLog[]
 
   @@map("presses")
 }
 
+/// CLIENT is a full role (not a separate login system) so portal users
+/// authenticate through the same User/Account/Session/VerificationToken
+/// tables as staff — one User row with role=CLIENT and clientId set links
+/// a portal login to its business record (see Client.users below), rather
+/// than maintaining a second parallel auth path.
 enum UserRole {
-  OWNER_ADMIN
+  ADMIN
+  DESIGNER
+  PRODUCTION
   ACCOUNTANT
-  GRAPHIC_DESIGNER
-  PRODUCTION_STAFF
-  SALES
+  CLIENT
 }
 
-/// Internal staff account. Role drives what a user can see/do (see
-/// src/server/auth.ts + middleware.ts for the RBAC gate).
+/// Every human who can sign in — staff (ADMIN/DESIGNER/PRODUCTION/
+/// ACCOUNTANT) and client-portal users (CLIENT) alike. Role drives what a
+/// user can see/do (see src/server/auth.ts + middleware.ts for the RBAC
+/// gate). passwordHash is optional because a CLIENT user is meant to sign
+/// in passwordlessly via the Email (magic-link) provider — only staff
+/// accounts set it, via the Credentials provider.
 model User {
-  id           String   @id @default(cuid())
-  pressId      String   @map("press_id")
-  press        Press    @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  name         String
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  role         UserRole
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id            String    @id @default(cuid())
+  pressId       String    @map("press_id")
+  press         Press     @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  name          String
+  email         String    @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  passwordHash  String?   @map("password_hash")
+  role          UserRole
+  clientId      String?   @map("client_id")
+  client        Client?   @relation(fields: [clientId], references: [id])
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
 
-  createdOrders        Order[]            @relation("OrderCreatedBy")
-  designedOrders       Order[]            @relation("OrderDesigner")
-  producedOrders       Order[]            @relation("OrderProductionStaff")
-  createdQuotations    Quotation[]        @relation("QuotationCreatedBy")
-  createdInvoices      Invoice[]          @relation("InvoiceCreatedBy")
-  recordedPayments     Payment[]          @relation("PaymentReceivedBy")
-  uploadedAssets       Asset[]            @relation("AssetUploadedBy")
-  sharedAssets         SharedAsset[]      @relation("SharedByUser")
-  auditLogs            AuditLog[]
+  accounts Account[]
+  sessions Session[]
+
+  createdOrders     Order[]       @relation("OrderCreatedBy")
+  designedOrders    Order[]       @relation("OrderDesigner")
+  producedOrders    Order[]       @relation("OrderProductionStaff")
+  createdQuotations Quotation[]   @relation("QuotationCreatedBy")
+  createdInvoices   Invoice[]     @relation("InvoiceCreatedBy")
+  recordedPayments  Payment[]     @relation("PaymentReceivedBy")
+  uploadedAssets    Asset[]       @relation("AssetUploadedBy")
+  sharedAssets      SharedAsset[] @relation("SharedByUser")
+  auditLogs         AuditLog[]
 
   @@index([pressId])
+  @@index([clientId])
   @@map("users")
 }
 
@@ -115,19 +187,20 @@ model User {
 /// A customer of the press (corporate, NGO, walk-in, government office).
 /// openingBalanceMinor seeds the ledger when migrating from paper books.
 model Client {
-  id                 String   @id @default(cuid())
-  pressId            String   @map("press_id")
-  press              Press    @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  name               String
-  companyName        String?  @map("company_name")
-  phone              String?
-  email              String?
-  address            String?
-  city               String?
-  ntnNumber          String?  @map("ntn_number")
-  openingBalanceMinor Int     @default(0) @map("opening_balance_minor")
-  notes              String?
-  createdAt          DateTime @default(now()) @map("created_at")
+  id                  String   @id @default(cuid())
+  pressId             String   @map("press_id")
+  press               Press    @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  name                String
+  companyName         String?  @map("company_name")
+  phone               String?
+  email               String?
+  address             String?
+  city                String?
+  ntnNumber           String?  @map("ntn_number")
+  strnNumber          String?  @map("strn_number") // Sales Tax Registration Number — distinct from NTN, both optional per client type (a walk-in customer has neither)
+  openingBalanceMinor Int      @default(0) @map("opening_balance_minor")
+  notes               String?
+  createdAt           DateTime @default(now()) @map("created_at")
 
   orders        Order[]
   quotations    Quotation[]
@@ -136,6 +209,7 @@ model Client {
   payments      Payment[]
   ledgerEntries ClientLedgerEntry[]
   inquiries     Inquiry[]
+  users         User[] // portal logins (role=CLIENT) tied to this business record — see User.clientId
 
   @@index([pressId])
   @@map("clients")
@@ -175,39 +249,42 @@ model Vendor {
 /// Catalog grouping shown on the public site: ID Cards, Stamps, Shields,
 /// Panaflex, Mugs, Envelopes, Awards, etc.
 model ProductCategory {
-  id          String   @id @default(cuid())
-  pressId     String   @map("press_id")
-  press       Press    @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  id          String  @id @default(cuid())
+  pressId     String  @map("press_id")
+  press       Press   @relation(fields: [pressId], references: [id], onDelete: Cascade)
   name        String
   slug        String
   description String?
-  iconName    String?  @map("icon_name") // lucide-react icon key
-  imageUrl    String?  @map("image_url")
-  sortOrder   Int      @default(0) @map("sort_order")
+  iconName    String? @map("icon_name") // lucide-react icon key
+  imageUrl    String? @map("image_url")
+  sortOrder   Int     @default(0) @map("sort_order")
 
-  serviceItems ServiceItem[]
+  catalogItems CatalogItem[]
   orders       Order[]
 
   @@unique([pressId, slug])
   @@map("product_categories")
 }
 
-/// A sellable line ("Employee ID Card - PVC", "Rubber Stamp - Self Inking")
-/// used to pre-fill quotation/order/invoice line items with a default rate.
-model ServiceItem {
-  id              String          @id @default(cuid())
-  pressId         String          @map("press_id")
-  press           Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  categoryId      String?         @map("category_id")
-  category        ProductCategory? @relation(fields: [categoryId], references: [id])
-  name            String
-  description     String?
-  unit            String          @default("pcs")
-  defaultRateMinor Int            @default(0) @map("default_rate_minor")
-  isActive        Boolean         @default(true) @map("is_active")
+/// A sellable line — "Panaflex Printing (Frontlit 240gsm)" priced per sq
+/// ft, "Ceramic Mug Sublimation Printing" priced per piece, "Letterhead /
+/// Envelope Printing" priced per 1000 pcs — used to pre-fill quotation/
+/// order/invoice line items with a default unit + rate instead of staff
+/// re-typing the shop's price list from memory on every job.
+model CatalogItem {
+  id               String           @id @default(cuid())
+  pressId          String           @map("press_id")
+  press            Press            @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  categoryId       String?          @map("category_id")
+  category         ProductCategory? @relation(fields: [categoryId], references: [id])
+  name             String
+  description      String?
+  unit             String           @default("piece") // e.g. "piece", "sq ft", "1000 pcs"
+  defaultRateMinor Int              @default(0) @map("default_rate_minor")
+  isActive         Boolean          @default(true) @map("is_active")
 
   @@index([pressId])
-  @@map("service_items")
+  @@map("catalog_items")
 }
 
 // -----------------------------------------------------------------------
@@ -224,20 +301,20 @@ enum InquiryStatus {
 /// Submitted from the public site's "Request a Quote" form. clientId is
 /// null until a staff member matches/creates a Client record.
 model Inquiry {
-  id             String        @id @default(cuid())
-  pressId        String        @map("press_id")
-  press          Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  clientId       String?       @map("client_id")
-  client         Client?       @relation(fields: [clientId], references: [id])
-  contactName    String        @map("contact_name")
-  companyName    String?       @map("company_name")
-  phone          String?
-  email          String?
-  message        String
-  status         InquiryStatus @default(NEW)
-  convertedOrderId String?     @unique @map("converted_order_id")
-  convertedOrder Order?        @relation(fields: [convertedOrderId], references: [id])
-  createdAt      DateTime      @default(now()) @map("created_at")
+  id               String        @id @default(cuid())
+  pressId          String        @map("press_id")
+  press            Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  clientId         String?       @map("client_id")
+  client           Client?       @relation(fields: [clientId], references: [id])
+  contactName      String        @map("contact_name")
+  companyName      String?       @map("company_name")
+  phone            String?
+  email            String?
+  message          String
+  status           InquiryStatus @default(NEW)
+  convertedOrderId String?       @unique @map("converted_order_id")
+  convertedOrder   Order?        @relation(fields: [convertedOrderId], references: [id])
+  createdAt        DateTime      @default(now()) @map("created_at")
 
   attachments Asset[] @relation("InquiryAttachments")
 
@@ -252,10 +329,10 @@ model Inquiry {
 enum OrderStatus {
   INQUIRY
   QUOTATION
-  DESIGN_APPROVAL
+  APPROVED
   IN_PRODUCTION
-  READY_FOR_DELIVERY
-  INVOICED
+  READY
+  DELIVERED
   COMPLETED
   CANCELLED
 }
@@ -271,37 +348,37 @@ enum OrderPriority {
 /// links back to. `status` drives the Kanban board in
 /// src/components/orders/OrderKanbanBoard.tsx.
 model Order {
-  id           String        @id @default(cuid())
-  pressId      String        @map("press_id")
-  press        Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  orderNumber  String        @map("order_number") // e.g. FPP-JOB-2026-000123
-  clientId     String        @map("client_id")
-  client       Client        @relation(fields: [clientId], references: [id])
-  categoryId   String?       @map("category_id")
-  category     ProductCategory? @relation(fields: [categoryId], references: [id])
-  title        String
-  description  String?
-  status       OrderStatus   @default(INQUIRY)
-  priority     OrderPriority @default(NORMAL)
-  dueDate      DateTime?     @map("due_date")
+  id          String           @id @default(cuid())
+  pressId     String           @map("press_id")
+  press       Press            @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  orderNumber String           @map("order_number") // e.g. FPP-JOB-2026-000123
+  clientId    String           @map("client_id")
+  client      Client           @relation(fields: [clientId], references: [id])
+  categoryId  String?          @map("category_id")
+  category    ProductCategory? @relation(fields: [categoryId], references: [id])
+  title       String
+  description String?
+  status      OrderStatus      @default(INQUIRY)
+  priority    OrderPriority    @default(NORMAL)
+  dueDate     DateTime?        @map("due_date")
 
-  createdById  String?       @map("created_by_id")
-  createdBy    User?         @relation("OrderCreatedBy", fields: [createdById], references: [id])
-  designerId   String?       @map("designer_id")
-  designer     User?         @relation("OrderDesigner", fields: [designerId], references: [id])
-  productionStaffId String?  @map("production_staff_id")
-  productionStaff   User?    @relation("OrderProductionStaff", fields: [productionStaffId], references: [id])
+  createdById       String? @map("created_by_id")
+  createdBy         User?   @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  designerId        String? @map("designer_id")
+  designer          User?   @relation("OrderDesigner", fields: [designerId], references: [id])
+  productionStaffId String? @map("production_staff_id")
+  productionStaff   User?   @relation("OrderProductionStaff", fields: [productionStaffId], references: [id])
 
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  lineItems    OrderLineItem[]
-  quotations   Quotation[]
-  invoices     Invoice[]
-  challans     DeliveryChallan[]
-  assets       Asset[]
-  sharedAssets SharedAsset[]
-  statusEvents OrderStatusEvent[]
+  lineItems     OrderLineItem[]
+  quotations    Quotation[]
+  invoices      Invoice[]
+  challans      DeliveryChallan[]
+  assets        Asset[]
+  sharedAssets  SharedAsset[]
+  statusEvents  OrderStatusEvent[]
   inquirySource Inquiry?
 
   @@unique([pressId, orderNumber])
@@ -312,14 +389,14 @@ model Order {
 /// Append-only trail of pipeline moves, so "how long did this sit in
 /// Design Approval" reporting doesn't need to be reconstructed from Order.
 model OrderStatusEvent {
-  id        String      @id @default(cuid())
-  orderId   String      @map("order_id")
-  order     Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  fromStatus OrderStatus? @map("from_status")
-  toStatus  OrderStatus @map("to_status")
-  changedById String?   @map("changed_by_id")
-  note      String?
-  createdAt DateTime    @default(now()) @map("created_at")
+  id          String       @id @default(cuid())
+  orderId     String       @map("order_id")
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus  OrderStatus? @map("from_status")
+  toStatus    OrderStatus  @map("to_status")
+  changedById String?      @map("changed_by_id")
+  note        String?
+  createdAt   DateTime     @default(now()) @map("created_at")
 
   @@index([orderId])
   @@map("order_status_events")
@@ -329,9 +406,9 @@ model OrderStatusEvent {
 /// Quotation/Invoice keep their *own* line item copies (below) so a signed
 /// quotation or issued bill never silently changes if the job scope does.
 model OrderLineItem {
-  id          String @id @default(cuid())
-  orderId     String @map("order_id")
-  order       Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id          String  @id @default(cuid())
+  orderId     String  @map("order_id")
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   particulars String
   qty         Decimal @db.Decimal(12, 2)
   unit        String  @default("pcs")
@@ -357,25 +434,25 @@ enum QuotationStatus {
 }
 
 model Quotation {
-  id          String          @id @default(cuid())
-  pressId     String          @map("press_id")
-  press       Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  quotationNumber String      @map("quotation_number") // e.g. FPP-QUO-2026-2116
-  orderId     String?         @map("order_id")
-  order       Order?          @relation(fields: [orderId], references: [id])
-  clientId    String          @map("client_id")
-  client      Client          @relation(fields: [clientId], references: [id])
-  issueDate   DateTime        @map("issue_date")
-  validUntil  DateTime?       @map("valid_until")
-  status      QuotationStatus @default(DRAFT)
-  subtotalMinor  Int          @default(0) @map("subtotal_minor")
-  discountMinor  Int          @default(0) @map("discount_minor")
-  taxMinor       Int          @default(0) @map("tax_minor")
-  totalMinor     Int          @default(0) @map("total_minor")
-  notes       String?
-  createdById String?         @map("created_by_id")
-  createdBy   User?           @relation("QuotationCreatedBy", fields: [createdById], references: [id])
-  createdAt   DateTime        @default(now()) @map("created_at")
+  id              String          @id @default(cuid())
+  pressId         String          @map("press_id")
+  press           Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  quotationNumber String          @map("quotation_number") // e.g. FPP-QUO-2026-2116
+  orderId         String?         @map("order_id")
+  order           Order?          @relation(fields: [orderId], references: [id])
+  clientId        String          @map("client_id")
+  client          Client          @relation(fields: [clientId], references: [id])
+  issueDate       DateTime        @map("issue_date")
+  validUntil      DateTime?       @map("valid_until")
+  status          QuotationStatus @default(DRAFT)
+  subtotalMinor   Int             @default(0) @map("subtotal_minor")
+  discountMinor   Int             @default(0) @map("discount_minor")
+  taxMinor        Int             @default(0) @map("tax_minor")
+  totalMinor      Int             @default(0) @map("total_minor")
+  notes           String?
+  createdById     String?         @map("created_by_id")
+  createdBy       User?           @relation("QuotationCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime        @default(now()) @map("created_at")
 
   lineItems QuotationLineItem[]
 
@@ -410,25 +487,25 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id            String        @id @default(cuid())
-  pressId       String        @map("press_id")
-  press         Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  invoiceNumber String        @map("invoice_number") // e.g. FPP-BILL-2026-006339
-  orderId       String?       @map("order_id")
-  order         Order?        @relation(fields: [orderId], references: [id])
-  clientId      String        @map("client_id")
-  client        Client        @relation(fields: [clientId], references: [id])
-  issueDate     DateTime      @map("issue_date")
-  status        InvoiceStatus @default(UNPAID)
-  subtotalMinor Int           @default(0) @map("subtotal_minor")
-  discountMinor Int           @default(0) @map("discount_minor")
-  taxMinor      Int           @default(0) @map("tax_minor")
-  totalMinor    Int           @default(0) @map("total_minor")
-  amountPaidMinor Int         @default(0) @map("amount_paid_minor")
-  notes         String?
-  createdById   String?       @map("created_by_id")
-  createdBy     User?         @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
-  createdAt     DateTime      @default(now()) @map("created_at")
+  id              String        @id @default(cuid())
+  pressId         String        @map("press_id")
+  press           Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  invoiceNumber   String        @map("invoice_number") // e.g. FPP-BILL-2026-006339
+  orderId         String?       @map("order_id")
+  order           Order?        @relation(fields: [orderId], references: [id])
+  clientId        String        @map("client_id")
+  client          Client        @relation(fields: [clientId], references: [id])
+  issueDate       DateTime      @map("issue_date")
+  status          InvoiceStatus @default(UNPAID)
+  subtotalMinor   Int           @default(0) @map("subtotal_minor")
+  discountMinor   Int           @default(0) @map("discount_minor")
+  taxMinor        Int           @default(0) @map("tax_minor")
+  totalMinor      Int           @default(0) @map("total_minor")
+  amountPaidMinor Int           @default(0) @map("amount_paid_minor")
+  notes           String?
+  createdById     String?       @map("created_by_id")
+  createdBy       User?         @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
+  createdAt       DateTime      @default(now()) @map("created_at")
 
   lineItems     InvoiceLineItem[]
   payments      Payment[]
@@ -515,21 +592,21 @@ enum PaymentMethod {
 /// A receipt against a client's balance. May target a specific invoice
 /// (full/partial settlement) or be an unallocated advance (invoiceId null).
 model Payment {
-  id             String        @id @default(cuid())
-  pressId        String        @map("press_id")
-  press          Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  clientId       String        @map("client_id")
-  client         Client        @relation(fields: [clientId], references: [id])
-  invoiceId      String?       @map("invoice_id")
-  invoice        Invoice?      @relation(fields: [invoiceId], references: [id])
-  amountMinor    Int           @map("amount_minor")
-  method         PaymentMethod @default(CASH)
-  reference      String?
-  paidAt         DateTime      @default(now()) @map("paid_at")
-  receivedById   String?       @map("received_by_id")
-  receivedBy     User?         @relation("PaymentReceivedBy", fields: [receivedById], references: [id])
-  notes          String?
-  createdAt      DateTime      @default(now()) @map("created_at")
+  id           String        @id @default(cuid())
+  pressId      String        @map("press_id")
+  press        Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  clientId     String        @map("client_id")
+  client       Client        @relation(fields: [clientId], references: [id])
+  invoiceId    String?       @map("invoice_id")
+  invoice      Invoice?      @relation(fields: [invoiceId], references: [id])
+  amountMinor  Int           @map("amount_minor")
+  method       PaymentMethod @default(CASH)
+  reference    String?
+  paidAt       DateTime      @default(now()) @map("paid_at")
+  receivedById String?       @map("received_by_id")
+  receivedBy   User?         @relation("PaymentReceivedBy", fields: [receivedById], references: [id])
+  notes        String?
+  createdAt    DateTime      @default(now()) @map("created_at")
 
   ledgerEntries ClientLedgerEntry[]
 
@@ -550,22 +627,22 @@ enum LedgerEntryType {
 /// runningBalanceMinor is maintained transactionally by ledger-actions.ts
 /// so the client ledger page can render instantly without re-summing.
 model ClientLedgerEntry {
-  id                 String          @id @default(cuid())
-  pressId            String          @map("press_id")
-  press              Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  clientId           String          @map("client_id")
-  client             Client          @relation(fields: [clientId], references: [id])
-  entryType          LedgerEntryType @map("entry_type")
-  invoiceId          String?         @map("invoice_id")
-  invoice            Invoice?        @relation(fields: [invoiceId], references: [id])
-  paymentId          String?         @map("payment_id")
-  payment            Payment?        @relation(fields: [paymentId], references: [id])
-  debitMinor         Int             @default(0) @map("debit_minor")
-  creditMinor        Int             @default(0) @map("credit_minor")
-  runningBalanceMinor Int            @map("running_balance_minor")
-  description        String?
-  entryDate          DateTime        @default(now()) @map("entry_date")
-  createdAt          DateTime        @default(now()) @map("created_at")
+  id                  String          @id @default(cuid())
+  pressId             String          @map("press_id")
+  press               Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  clientId            String          @map("client_id")
+  client              Client          @relation(fields: [clientId], references: [id])
+  entryType           LedgerEntryType @map("entry_type")
+  invoiceId           String?         @map("invoice_id")
+  invoice             Invoice?        @relation(fields: [invoiceId], references: [id])
+  paymentId           String?         @map("payment_id")
+  payment             Payment?        @relation(fields: [paymentId], references: [id])
+  debitMinor          Int             @default(0) @map("debit_minor")
+  creditMinor         Int             @default(0) @map("credit_minor")
+  runningBalanceMinor Int             @map("running_balance_minor")
+  description         String?
+  entryDate           DateTime        @default(now()) @map("entry_date")
+  createdAt           DateTime        @default(now()) @map("created_at")
 
   @@index([pressId, clientId, entryDate])
   @@map("client_ledger_entries")
@@ -575,18 +652,18 @@ model ClientLedgerEntry {
 /// separate table rather than a polymorphic one so FK integrity stays
 /// simple and each side can evolve independently (e.g. vendor bills).
 model VendorLedgerEntry {
-  id                 String          @id @default(cuid())
-  pressId            String          @map("press_id")
-  press              Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  vendorId           String          @map("vendor_id")
-  vendor             Vendor          @relation(fields: [vendorId], references: [id])
-  entryType          LedgerEntryType @map("entry_type")
-  debitMinor         Int             @default(0) @map("debit_minor")
-  creditMinor        Int             @default(0) @map("credit_minor")
-  runningBalanceMinor Int            @map("running_balance_minor")
-  description        String?
-  entryDate          DateTime        @default(now()) @map("entry_date")
-  createdAt          DateTime        @default(now()) @map("created_at")
+  id                  String          @id @default(cuid())
+  pressId             String          @map("press_id")
+  press               Press           @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  vendorId            String          @map("vendor_id")
+  vendor              Vendor          @relation(fields: [vendorId], references: [id])
+  entryType           LedgerEntryType @map("entry_type")
+  debitMinor          Int             @default(0) @map("debit_minor")
+  creditMinor         Int             @default(0) @map("credit_minor")
+  runningBalanceMinor Int             @map("running_balance_minor")
+  description         String?
+  entryDate           DateTime        @default(now()) @map("entry_date")
+  createdAt           DateTime        @default(now()) @map("created_at")
 
   @@index([pressId, vendorId, entryDate])
   @@map("vendor_ledger_entries")
@@ -636,22 +713,22 @@ enum AssetFileType {
 /// live in Supabase Storage or S3 (storageKey); this row is the metadata +
 /// access-control anchor.
 model Asset {
-  id             String        @id @default(cuid())
-  pressId        String        @map("press_id")
-  press          Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
-  orderId        String?       @map("order_id")
-  order          Order?        @relation(fields: [orderId], references: [id])
-  inquiryId      String?       @map("inquiry_id")
-  inquiry        Inquiry?      @relation("InquiryAttachments", fields: [inquiryId], references: [id])
-  fileName       String        @map("file_name")
-  fileType       AssetFileType @map("file_type")
-  storageKey     String        @map("storage_key")
-  sizeBytes      Int           @map("size_bytes")
-  version        Int           @default(1)
-  isRawArtwork   Boolean       @default(false) @map("is_raw_artwork") // client-submitted vs. in-house production file
-  uploadedById   String?       @map("uploaded_by_id")
-  uploadedBy     User?         @relation("AssetUploadedBy", fields: [uploadedById], references: [id])
-  createdAt      DateTime      @default(now()) @map("created_at")
+  id           String        @id @default(cuid())
+  pressId      String        @map("press_id")
+  press        Press         @relation(fields: [pressId], references: [id], onDelete: Cascade)
+  orderId      String?       @map("order_id")
+  order        Order?        @relation(fields: [orderId], references: [id])
+  inquiryId    String?       @map("inquiry_id")
+  inquiry      Inquiry?      @relation("InquiryAttachments", fields: [inquiryId], references: [id])
+  fileName     String        @map("file_name")
+  fileType     AssetFileType @map("file_type")
+  storageKey   String        @map("storage_key")
+  sizeBytes    Int           @map("size_bytes")
+  version      Int           @default(1)
+  isRawArtwork Boolean       @default(false) @map("is_raw_artwork") // client-submitted vs. in-house production file
+  uploadedById String?       @map("uploaded_by_id")
+  uploadedBy   User?         @relation("AssetUploadedBy", fields: [uploadedById], references: [id])
+  createdAt    DateTime      @default(now()) @map("created_at")
 
   sharedCopies SharedAsset[]
 
@@ -668,13 +745,13 @@ enum PartnershipStatus {
 /// A trust relationship between two presses, established before either can
 /// share assets/specs with the other (see SharedAsset.pressPartnershipId).
 model PressPartnership {
-  id            String            @id @default(cuid())
-  pressAId      String            @map("press_a_id")
-  pressA        Press             @relation("PartnershipPressA", fields: [pressAId], references: [id])
-  pressBId      String            @map("press_b_id")
-  pressB        Press             @relation("PartnershipPressB", fields: [pressBId], references: [id])
-  status        PartnershipStatus @default(PENDING)
-  createdAt     DateTime          @default(now()) @map("created_at")
+  id        String            @id @default(cuid())
+  pressAId  String            @map("press_a_id")
+  pressA    Press             @relation("PartnershipPressA", fields: [pressAId], references: [id])
+  pressBId  String            @map("press_b_id")
+  pressB    Press             @relation("PartnershipPressB", fields: [pressBId], references: [id])
+  status    PartnershipStatus @default(PENDING)
+  createdAt DateTime          @default(now()) @map("created_at")
 
   sharedAssets SharedAsset[]
 
@@ -724,7 +801,7 @@ model AuditLog {
   press      Press    @relation(fields: [pressId], references: [id], onDelete: Cascade)
   userId     String?  @map("user_id")
   user       User?    @relation(fields: [userId], references: [id])
-  action     String   // e.g. "order.status_changed", "invoice.voided"
+  action     String // e.g. "order.status_changed", "invoice.voided"
   entityType String   @map("entity_type")
   entityId   String   @map("entity_id")
   metadata   Json?

@@ -4,11 +4,12 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 /**
- * Demo press + sample data so `npm run dev` has something to look at
- * without hand-entering a client/order/invoice first. Idempotent-ish via
- * `upsert` on the press/user/client so re-running `db:seed` doesn't pile
- * up duplicates, though orders/invoices are plain `create` since they
- * don't have a natural unique key to upsert on.
+ * Demo press + realistic local print-shop data so `npm run dev` has
+ * something to look at without hand-entering a client/catalog/order
+ * first. Idempotent-ish via `upsert` on rows with a natural unique key
+ * (press/users/client/category) so re-running `db:seed` doesn't pile up
+ * duplicates; the sample order and its ledger entry are plain `create`
+ * since they don't have one to upsert on.
  */
 async function main() {
   const press = await prisma.press.upsert({
@@ -16,167 +17,210 @@ async function main() {
     update: {},
     create: {
       id: "demo-press",
-      name: "Farman Printing Press",
-      ntnNumber: "1234567-8",
-      headOfficeAddress: "Shop #12, Urdu Bazar, Lahore",
-      branchOfficeAddress: "Main Market, Gulberg, Lahore",
-      phones: ["0346-9547770", "0307-7161616"],
-      email: "info@farmanprinting.example",
-      website: "www.farmanprinting.example",
+      name: "Farman Printing Press - Islamabad",
+      ntnNumber: "3311234-5",
+      headOfficeAddress: "Shop #7, Blue Area, Islamabad",
+      branchOfficeAddress: "G-9 Markaz, Islamabad",
+      phones: ["051-2345678", "0300-9876543"],
+      email: "info@farmanpress.com",
+      website: "www.farmanpress.com",
     },
   });
 
-  const passwordHash = await bcrypt.hash("password123", 10);
+  const passwordHash = await bcrypt.hash("Password123!", 10);
   const owner = await prisma.user.upsert({
-    where: { email: "owner@farmanprinting.example" },
+    where: { email: "owner@farmanpress.com" },
     update: {},
     create: {
       pressId: press.id,
       name: "Farman Ahmed",
-      email: "owner@farmanprinting.example",
+      email: "owner@farmanpress.com",
       passwordHash,
-      role: "OWNER_ADMIN",
+      role: "ADMIN",
     },
   });
 
-  const categories = await Promise.all(
-    [
-      { name: "ID Cards", slug: "id-cards", iconName: "IdCard", sortOrder: 0 },
-      { name: "Rubber Stamps", slug: "stamps", iconName: "Stamp", sortOrder: 1 },
-      { name: "Shields & Awards", slug: "shields", iconName: "Award", sortOrder: 2 },
-      { name: "Panaflex & Banners", slug: "panaflex", iconName: "Image", sortOrder: 3 },
-      { name: "Mugs", slug: "mugs", iconName: "Coffee", sortOrder: 4 },
-      { name: "Envelopes & Letterheads", slug: "envelopes", iconName: "Mail", sortOrder: 5 },
-    ].map((c) =>
-      prisma.productCategory.upsert({
-        where: { pressId_slug: { pressId: press.id, slug: c.slug } },
-        update: {},
-        create: { ...c, pressId: press.id },
-      }),
-    ),
-  );
-
-  const idCardsCategory = categories.find((c) => c.slug === "id-cards")!;
-  await prisma.serviceItem.createMany({
-    data: [
-      { pressId: press.id, categoryId: idCardsCategory.id, name: "Employee ID Card - PVC", unit: "pcs", defaultRateMinor: 15000 },
-      { pressId: press.id, categoryId: idCardsCategory.id, name: "Employee ID Card - Paper Laminated", unit: "pcs", defaultRateMinor: 8000 },
-    ],
-    skipDuplicates: true,
-  });
-
-  const client = await prisma.client.upsert({
-    where: { id: "demo-client" },
+  await prisma.user.upsert({
+    where: { email: "designer@farmanpress.com" },
     update: {},
     create: {
-      id: "demo-client",
       pressId: press.id,
-      name: "Ahmed Raza",
-      companyName: "Raza Textiles (Pvt) Ltd",
-      phone: "0300-1234567",
-      city: "Lahore",
-      openingBalanceMinor: 0,
+      name: "Ayesha Khan",
+      email: "designer@farmanpress.com",
+      passwordHash: await bcrypt.hash("Password123!", 10),
+      role: "DESIGNER",
     },
   });
 
+  // The sample NGO client — no portal User row yet on purpose: that's
+  // only ever created via grantClientPortalAccess (client-actions.ts),
+  // mirroring the real flow of a staff member switching on portal access
+  // after onboarding a client, not something seeded for free.
+  const client = await prisma.client.upsert({
+    where: { id: "demo-client-ngo" },
+    update: {},
+    create: {
+      id: "demo-client-ngo",
+      pressId: press.id,
+      name: "Zainab Malik",
+      companyName: "Society for Education & Development",
+      phone: "051-8438822",
+      email: "accounts@sed-ngo.org.pk",
+      address: "House 12, Street 4, F-7/2, Islamabad",
+      city: "Islamabad",
+      ntnNumber: "0987654-3",
+      openingBalanceMinor: 4_500_000, // PKR 45,000 owed, migrated from the paper ledger
+    },
+  });
+
+  const printingCategory = await prisma.productCategory.upsert({
+    where: { pressId_slug: { pressId: press.id, slug: "panaflex" } },
+    update: {},
+    create: { pressId: press.id, name: "Panaflex & Banners", slug: "panaflex", sortOrder: 0, iconName: "Image" },
+  });
+  const awardsCategory = await prisma.productCategory.upsert({
+    where: { pressId_slug: { pressId: press.id, slug: "shields" } },
+    update: {},
+    create: { pressId: press.id, name: "Shields & Awards", slug: "shields", sortOrder: 1, iconName: "Award" },
+  });
+  const stampsCategory = await prisma.productCategory.upsert({
+    where: { pressId_slug: { pressId: press.id, slug: "stamps" } },
+    update: {},
+    create: { pressId: press.id, name: "Rubber Stamps", slug: "stamps", sortOrder: 2, iconName: "Stamp" },
+  });
+  const mugsCategory = await prisma.productCategory.upsert({
+    where: { pressId_slug: { pressId: press.id, slug: "mugs" } },
+    update: {},
+    create: { pressId: press.id, name: "Mugs", slug: "mugs", sortOrder: 3, iconName: "Coffee" },
+  });
+  const idCardsCategory = await prisma.productCategory.upsert({
+    where: { pressId_slug: { pressId: press.id, slug: "id-cards" } },
+    update: {},
+    create: { pressId: press.id, name: "ID Cards", slug: "id-cards", sortOrder: 4, iconName: "IdCard" },
+  });
+  const stationeryCategory = await prisma.productCategory.upsert({
+    where: { pressId_slug: { pressId: press.id, slug: "stationery" } },
+    update: {},
+    create: { pressId: press.id, name: "Letterheads & Envelopes", slug: "stationery", sortOrder: 5, iconName: "Mail" },
+  });
+
+  const [panaflexItem] = await Promise.all([
+    prisma.catalogItem.create({
+      data: {
+        pressId: press.id,
+        categoryId: printingCategory.id,
+        name: "Panaflex Printing (Frontlit 240gsm)",
+        unit: "sq ft",
+        defaultRateMinor: 3_500, // PKR 35 / sq ft
+      },
+    }),
+    prisma.catalogItem.create({
+      data: {
+        pressId: press.id,
+        categoryId: awardsCategory.id,
+        name: "Custom Acrylic Award / Shield (8 inch)",
+        unit: "piece",
+        defaultRateMinor: 180_000, // PKR 1,800 / piece
+      },
+    }),
+    prisma.catalogItem.create({
+      data: {
+        pressId: press.id,
+        categoryId: stampsCategory.id,
+        name: "Self-Inking Rubber Stamp (Standard Dater)",
+        unit: "piece",
+        defaultRateMinor: 45_000, // PKR 450 / piece
+      },
+    }),
+    prisma.catalogItem.create({
+      data: {
+        pressId: press.id,
+        categoryId: mugsCategory.id,
+        name: "Ceramic Mug Sublimation Printing",
+        unit: "piece",
+        defaultRateMinor: 55_000, // PKR 550 / piece
+      },
+    }),
+    prisma.catalogItem.create({
+      data: {
+        pressId: press.id,
+        categoryId: idCardsCategory.id,
+        name: "Employee ID Card (PVC hard card + Lanyard)",
+        unit: "piece",
+        defaultRateMinor: 25_000, // PKR 250 / piece
+      },
+    }),
+    prisma.catalogItem.create({
+      data: {
+        pressId: press.id,
+        categoryId: stationeryCategory.id,
+        name: "Letterhead / Envelope Printing (Offset 100gsm)",
+        unit: "1000 pcs",
+        defaultRateMinor: 850_000, // PKR 8,500 / 1000 pcs
+      },
+    }),
+  ]);
+
+  // One sample job so the Kanban board isn't empty — priced off the
+  // Panaflex catalog item above rather than a hand-typed rate, the way
+  // staff would actually build an order from the price list.
   const order = await prisma.order.create({
     data: {
       pressId: press.id,
-      orderNumber: "FPP-JOB-2026-000001",
+      orderNumber: "FPP-JOB-2026-001",
       clientId: client.id,
-      categoryId: idCardsCategory.id,
-      title: "200x Employee ID Cards",
-      status: "INVOICED",
+      categoryId: printingCategory.id,
+      title: "20ft x 6ft Event Backdrop Panaflex",
+      status: "QUOTATION",
       priority: "NORMAL",
       createdById: owner.id,
       lineItems: {
         create: [
-          { particulars: "Employee ID Card - PVC", qty: 200, rateMinor: 15000, amountMinor: 200 * 15000, sortOrder: 0 },
+          {
+            particulars: panaflexItem.name,
+            qty: 120,
+            unit: panaflexItem.unit,
+            rateMinor: panaflexItem.defaultRateMinor,
+            amountMinor: 120 * panaflexItem.defaultRateMinor,
+            sortOrder: 0,
+          },
         ],
       },
       statusEvents: {
         create: [
           { toStatus: "INQUIRY", changedById: owner.id, note: "Seed data" },
           { fromStatus: "INQUIRY", toStatus: "QUOTATION", changedById: owner.id },
-          { fromStatus: "QUOTATION", toStatus: "DESIGN_APPROVAL", changedById: owner.id },
-          { fromStatus: "DESIGN_APPROVAL", toStatus: "IN_PRODUCTION", changedById: owner.id },
-          { fromStatus: "IN_PRODUCTION", toStatus: "READY_FOR_DELIVERY", changedById: owner.id },
-          { fromStatus: "READY_FOR_DELIVERY", toStatus: "INVOICED", changedById: owner.id },
         ],
       },
     },
   });
 
-  const invoiceTotalMinor = 200 * 15000;
-  const invoice = await prisma.invoice.create({
-    data: {
-      pressId: press.id,
-      invoiceNumber: "FPP-BILL-2026-000001",
-      orderId: order.id,
-      clientId: client.id,
-      issueDate: new Date(),
-      status: "PARTIALLY_PAID",
-      subtotalMinor: invoiceTotalMinor,
-      totalMinor: invoiceTotalMinor,
-      amountPaidMinor: 1_500_000,
-      createdById: owner.id,
-      lineItems: {
-        create: [
-          { particulars: "Employee ID Card - PVC", qty: 200, rateMinor: 15000, amountMinor: invoiceTotalMinor, sortOrder: 0 },
-        ],
-      },
-    },
-  });
-
-  await prisma.documentSequence.upsert({
-    where: { pressId_documentType_year: { pressId: press.id, documentType: "BILL", year: new Date().getFullYear() } },
-    update: {},
-    create: { pressId: press.id, documentType: "BILL", year: new Date().getFullYear(), lastNumber: 1 },
-  });
   await prisma.documentSequence.upsert({
     where: { pressId_documentType_year: { pressId: press.id, documentType: "ORDER", year: new Date().getFullYear() } },
     update: {},
     create: { pressId: press.id, documentType: "ORDER", year: new Date().getFullYear(), lastNumber: 1 },
   });
 
+  // The requested "pending balance of PKR 45,000" as an actual ledger
+  // line (not just Client.openingBalanceMinor) so the client ledger page
+  // — and the ledger-math test script below — has a real row to read,
+  // matching how ledger-actions.ts expects OPENING_BALANCE to be recorded.
   await prisma.clientLedgerEntry.create({
     data: {
       pressId: press.id,
       clientId: client.id,
-      entryType: "INVOICE",
-      invoiceId: invoice.id,
-      debitMinor: invoiceTotalMinor,
-      runningBalanceMinor: invoiceTotalMinor,
-      description: `Invoice ${invoice.invoiceNumber}`,
-      entryDate: invoice.issueDate,
+      entryType: "OPENING_BALANCE",
+      debitMinor: 4_500_000,
+      runningBalanceMinor: 4_500_000,
+      description: "Opening balance migrated from paper ledger",
     },
   });
 
-  const payment = await prisma.payment.create({
-    data: {
-      pressId: press.id,
-      clientId: client.id,
-      invoiceId: invoice.id,
-      amountMinor: 1_500_000,
-      method: "BANK_TRANSFER",
-      receivedById: owner.id,
-    },
-  });
-
-  await prisma.clientLedgerEntry.create({
-    data: {
-      pressId: press.id,
-      clientId: client.id,
-      entryType: "PAYMENT",
-      invoiceId: invoice.id,
-      paymentId: payment.id,
-      creditMinor: 1_500_000,
-      runningBalanceMinor: invoiceTotalMinor - 1_500_000,
-      description: "Payment (BANK_TRANSFER)",
-    },
-  });
-
-  console.log(`Seeded press "${press.name}" — sign in as ${owner.email} / password123`);
+  console.log(`Seeded press "${press.name}"`);
+  console.log(`  Order created against: ${order.orderNumber}`);
+  console.log(`  Admin login:    owner@farmanpress.com / Password123!`);
+  console.log(`  Designer login: designer@farmanpress.com / Password123!`);
+  console.log(`  NGO client "${client.companyName}" opening balance: PKR 45,000`);
 }
 
 main()

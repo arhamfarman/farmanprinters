@@ -23,10 +23,10 @@ export const updateOrderStatusSchema = z.object({
   toStatus: z.enum([
     "INQUIRY",
     "QUOTATION",
-    "DESIGN_APPROVAL",
+    "APPROVED",
     "IN_PRODUCTION",
-    "READY_FOR_DELIVERY",
-    "INVOICED",
+    "READY",
+    "DELIVERED",
     "COMPLETED",
     "CANCELLED",
   ]),
@@ -116,10 +116,19 @@ export const createClientSchema = z.object({
   address: z.string().optional(),
   city: z.string().optional(),
   ntnNumber: z.string().optional(),
+  strnNumber: z.string().optional(),
   openingBalanceMinor: z.coerce.number().int().default(0),
   notes: z.string().optional(),
 });
 export type CreateClientInput = z.infer<typeof createClientSchema>;
+
+/** Staff-initiated — see auth-options.ts's createUser override: a CLIENT can only sign in after this creates their User row. */
+export const grantClientPortalAccessSchema = z.object({
+  clientId: z.string().min(1),
+  name: z.string().min(1, "Name is required"),
+  email: z.string().email(),
+});
+export type GrantClientPortalAccessInput = z.infer<typeof grantClientPortalAccessSchema>;
 
 export const createInquirySchema = z.object({
   contactName: z.string().min(1, "Name is required"),

@@ -61,9 +61,9 @@ export async function createOrder(input: CreateOrderInput) {
 
 /**
  * Moves an order to the next pipeline stage (or CANCELLED). Rejects a jump
- * that skips stages so the Kanban board can't get the ledger/production
+ * that skips stages so the Kanban board can't get the production/delivery
  * trail out of sync with reality — e.g. you can't mark something
- * COMPLETED without it having passed through INVOICED first.
+ * COMPLETED without it having passed through DELIVERED first.
  */
 export async function updateOrderStatus(input: UpdateOrderStatusInput) {
   const session = requireRole(await getSession(), ALL_STAFF);
