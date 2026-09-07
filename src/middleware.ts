@@ -31,7 +31,7 @@ export async function middleware(request: NextRequest) {
 
   if (pathname.startsWith("/client")) {
     if (!token || token.role !== "CLIENT" || !token.clientId) {
-      return redirectToSignIn(request);
+      return redirectToSignIn(request, "/auth/magic-link");
     }
     return NextResponse.next();
   }
@@ -39,8 +39,11 @@ export async function middleware(request: NextRequest) {
   return NextResponse.next();
 }
 
-function redirectToSignIn(request: NextRequest) {
-  const signInUrl = new URL("/api/auth/signin", request.url);
+// Staff bounce to NextAuth's generic provider-list page (Credentials is
+// the only one relevant to them); a client bounces to the portal's own
+// branded magic-link request page instead — see (auth)/magic-link/page.tsx.
+function redirectToSignIn(request: NextRequest, target = "/api/auth/signin") {
+  const signInUrl = new URL(target, request.url);
   signInUrl.searchParams.set("callbackUrl", request.nextUrl.pathname);
   return NextResponse.redirect(signInUrl);
 }

@@ -30,3 +30,18 @@ export async function getCategoryBySlug(slug: string) {
     include: { catalogItems: { where: { isActive: true } } },
   });
 }
+
+/**
+ * Flat, category-grouped item list for the "Request a Quote" form's item
+ * picker (InquiryForm.tsx) — unlike getCategoryBySlug, this isn't scoped
+ * to one category, since a client should be able to add a Panaflex line
+ * and a Rubber Stamp line to the same inquiry.
+ */
+export async function listCatalogItemsForInquiry() {
+  const press = await getPublicPress();
+  return db.catalogItem.findMany({
+    where: { pressId: press.id, isActive: true },
+    include: { category: { select: { id: true, name: true } } },
+    orderBy: [{ category: { sortOrder: "asc" } }, { name: "asc" }],
+  });
+}

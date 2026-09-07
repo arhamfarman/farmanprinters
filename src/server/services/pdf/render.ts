@@ -3,6 +3,7 @@ import { db } from "@/server/db";
 import { BillPdf } from "@/components/documents/BillPdf";
 import { QuotationPdf } from "@/components/documents/QuotationPdf";
 import { ChallanPdf } from "@/components/documents/ChallanPdf";
+import type { Session } from "@/server/auth";
 
 const PRESS_SELECT = {
   name: true,
@@ -14,20 +15,28 @@ const PRESS_SELECT = {
   website: true,
 } as const;
 
+/** A staff session may fetch any document in its press; a CLIENT session only its own client's documents. */
+function assertAccess(session: Session, doc: { pressId: string; clientId: string }) {
+  if (doc.pressId !== session.pressId) throw new Error("Document does not belong to your press");
+  if (session.role === "CLIENT" && doc.clientId !== session.clientId) {
+    throw new Error("Document does not belong to you");
+  }
+}
+
 /**
  * Fetches one document + its press/client/line items and renders it to a
  * PDF buffer — the only place that turns a DB row into printable bytes, so
  * api/documents/[type]/[id]/pdf/route.ts stays a thin auth-then-stream
- * wrapper. Each function re-checks pressId itself (rather than trusting
- * the caller already did) since a signed/shared link may reach here
- * without having gone through a server action's requireRole() first.
+ * wrapper. Each function re-checks ownership itself (rather than trusting
+ * the caller already did) since this is reachable by both a staff session
+ * (any document in its press) and a CLIENT portal session (only its own).
  */
-export async function renderInvoicePdf(invoiceId: string, pressId: string): Promise<Buffer> {
+export async function renderInvoicePdf(invoiceId: string, session: Session): Promise<Buffer> {
   const invoice = await db.invoice.findUniqueOrThrow({
     where: { id: invoiceId },
     include: { client: true, press: { select: PRESS_SELECT } , lineItems: { orderBy: { sortOrder: "asc" } } },
   });
-  if (invoice.pressId !== pressId) throw new Error("Invoice does not belong to your press");
+  assertAccess(session, invoice);
 
   return renderToBuffer(
     BillPdf({
@@ -39,12 +48,12 @@ export async function renderInvoicePdf(invoiceId: string, pressId: string): Prom
   );
 }
 
-export async function renderQuotationPdf(quotationId: string, pressId: string): Promise<Buffer> {
+export async function renderQuotationPdf(quotationId: string, session: Session): Promise<Buffer> {
   const quotation = await db.quotation.findUniqueOrThrow({
     where: { id: quotationId },
     include: { client: true, press: { select: PRESS_SELECT }, lineItems: { orderBy: { sortOrder: "asc" } } },
   });
-  if (quotation.pressId !== pressId) throw new Error("Quotation does not belong to your press");
+  assertAccess(session, quotation);
 
   return renderToBuffer(
     QuotationPdf({
@@ -56,12 +65,12 @@ export async function renderQuotationPdf(quotationId: string, pressId: string): 
   );
 }
 
-export async function renderChallanPdf(challanId: string, pressId: string): Promise<Buffer> {
+export async function renderChallanPdf(challanId: string, session: Session): Promise<Buffer> {
   const challan = await db.deliveryChallan.findUniqueOrThrow({
     where: { id: challanId },
     include: { client: true, press: { select: PRESS_SELECT }, items: { orderBy: { sortOrder: "asc" } } },
   });
-  if (challan.pressId !== pressId) throw new Error("Challan does not belong to your press");
+  assertAccess(session, challan);
 
   return renderToBuffer(
     ChallanPdf({
@@ -76,13 +85,13 @@ export async function renderChallanPdf(challanId: string, pressId: string): Prom
 export type PdfDocumentType = "invoice" | "quotation" | "challan";
 
 /** Dispatcher used by the generic `/api/documents/[type]/[id]/pdf` route. */
-export function renderDocumentPdf(type: PdfDocumentType, id: string, pressId: string): Promise<Buffer> {
+export function renderDocumentPdf(type: PdfDocumentType, id: string, session: Session): Promise<Buffer> {
   switch (type) {
     case "invoice":
-      return renderInvoicePdf(id, pressId);
+      return renderInvoicePdf(id, session);
     case "quotation":
-      return renderQuotationPdf(id, pressId);
+      return renderQuotationPdf(id, session);
     case "challan":
-      return renderChallanPdf(id, pressId);
+      return renderChallanPdf(id, session);
   }
 }

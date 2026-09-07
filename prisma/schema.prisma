@@ -283,6 +283,8 @@ model CatalogItem {
   defaultRateMinor Int              @default(0) @map("default_rate_minor")
   isActive         Boolean          @default(true) @map("is_active")
 
+  inquiryItems InquiryItem[]
+
   @@index([pressId])
   @@map("catalog_items")
 }
@@ -310,16 +312,37 @@ model Inquiry {
   companyName      String?       @map("company_name")
   phone            String?
   email            String?
-  message          String
+  message          String? // optional now that structured InquiryItem rows can carry the request instead
   status           InquiryStatus @default(NEW)
   convertedOrderId String?       @unique @map("converted_order_id")
   convertedOrder   Order?        @relation(fields: [convertedOrderId], references: [id])
   createdAt        DateTime      @default(now()) @map("created_at")
 
-  attachments Asset[] @relation("InquiryAttachments")
+  attachments Asset[]       @relation("InquiryAttachments")
+  items       InquiryItem[]
 
   @@index([pressId, status])
   @@map("inquiries")
+}
+
+/// One catalog-item selection on a public inquiry — "120 sq ft of
+/// Panaflex, 20ft x 6ft" — so the request that reaches staff is
+/// structured (item + qty + free-text notes for dimensions/specs) instead
+/// of buried in the `message` field alone. Deliberately its own row per
+/// item rather than JSON on Inquiry, so it can be read/priced the same
+/// way OrderLineItem/QuotationLineItem/InvoiceLineItem are.
+model InquiryItem {
+  id            String      @id @default(cuid())
+  inquiryId     String      @map("inquiry_id")
+  inquiry       Inquiry     @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  catalogItemId String      @map("catalog_item_id")
+  catalogItem   CatalogItem @relation(fields: [catalogItemId], references: [id])
+  quantity      Decimal     @db.Decimal(12, 2)
+  notes         String? // e.g. "20ft x 6ft", "Company logo in blue"
+  sortOrder     Int         @default(0) @map("sort_order")
+
+  @@index([inquiryId])
+  @@map("inquiry_items")
 }
 
 // -----------------------------------------------------------------------

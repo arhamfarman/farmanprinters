@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 const NAV = [
+  { href: "/client/dashboard", label: "Dashboard" },
   { href: "/client/orders", label: "My Orders" },
   { href: "/client/ledger", label: "My Ledger" },
 ];

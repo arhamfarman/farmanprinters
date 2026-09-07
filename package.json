@@ -5,16 +5,18 @@
   "description": "Farman Printing Press — client portal, public showcase, and internal job/ledger ERP.",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate && next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
-    "db:verify": "tsx prisma/verify.ts"
+    "db:verify": "tsx prisma/verify.ts",
+    "db:verify:e2e": "tsx prisma/verify-e2e.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",
@@ -38,6 +40,7 @@
     "@dnd-kit/sortable": "^8.0.0"
   },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.15.13",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.7.4",
     "@types/nodemailer": "^6.4.16",

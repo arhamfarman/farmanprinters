@@ -6,7 +6,7 @@ import { getSession, requireRole, ALL_STAFF, FINANCE_ROLES } from "@/server/auth
 import { nextDocumentNumber } from "@/server/services/numbering";
 import { pressCode } from "@/lib/press-code";
 import { sumMinor } from "@/lib/currency";
-import { postInvoiceToLedger } from "./ledger-actions";
+import { postInvoiceToLedgerTx } from "./ledger-actions";
 import {
   createInvoiceSchema,
   voidInvoiceSchema,
@@ -19,11 +19,12 @@ import {
  * status (see schema.prisma's OrderStatus comment) — a press might bill
  * before delivery (advance) or well after (net terms), so the Kanban
  * stage is driven by updateOrderStatus()/markChallanDelivered() only. It
- * still has to be transactional with its own line items, and
- * postInvoiceToLedger's debit has to land right after: a bill existing
+ * still has to be transactional with its own line items, and the ledger
+ * debit has to land in the very same transaction: an invoice existing
  * with no corresponding ledger entry is exactly the kind of silent
  * mismatch the paper ledger books couldn't have (a bill was physically
- * stapled to its ledger line).
+ * stapled to its ledger line). If the ledger write fails, the invoice
+ * create rolls back too — there's no in-between state to worry about.
  */
 export async function createInvoice(input: CreateInvoiceInput) {
   const session = requireRole(await getSession(), ALL_STAFF);
@@ -42,26 +43,29 @@ export async function createInvoice(input: CreateInvoiceInput) {
   const subtotalMinor = sumMinor(lineItems.map((li) => li.amountMinor));
   const totalMinor = subtotalMinor - data.discountMinor + data.taxMinor;
 
-  const invoice = await db.invoice.create({
-    data: {
-      pressId: session.pressId,
-      invoiceNumber,
-      orderId: data.orderId,
-      clientId: data.clientId,
-      issueDate: new Date(),
-      status: "UNPAID",
-      subtotalMinor,
-      discountMinor: data.discountMinor,
-      taxMinor: data.taxMinor,
-      totalMinor,
-      notes: data.notes,
-      createdById: session.userId,
-      lineItems: { create: lineItems },
-    },
-    include: { lineItems: true },
-  });
+  const invoice = await db.$transaction(async (tx) => {
+    const created = await tx.invoice.create({
+      data: {
+        pressId: session.pressId,
+        invoiceNumber,
+        orderId: data.orderId,
+        clientId: data.clientId,
+        issueDate: new Date(),
+        status: "UNPAID",
+        subtotalMinor,
+        discountMinor: data.discountMinor,
+        taxMinor: data.taxMinor,
+        totalMinor,
+        notes: data.notes,
+        createdById: session.userId,
+        lineItems: { create: lineItems },
+      },
+      include: { lineItems: true },
+    });
 
-  await postInvoiceToLedger(invoice.id);
+    await postInvoiceToLedgerTx(tx, created.id);
+    return created;
+  });
 
   if (data.orderId) revalidatePath(`/dashboard/orders/${data.orderId}`);
   revalidatePath("/dashboard/invoices");

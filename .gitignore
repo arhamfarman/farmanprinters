@@ -8,3 +8,6 @@ build
 .DS_Store
 npm-debug.log*
 next-env.d.ts
+
+# Netlify CLI's local state (site link, cached functions) — never shared across machines/deploys
+.netlify

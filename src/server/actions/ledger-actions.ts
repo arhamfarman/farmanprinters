@@ -13,7 +13,10 @@ import { recordPaymentSchema, type RecordPaymentInput } from "@/lib/validation";
  * you to add up a column by hand.
  */
 
-async function currentBalance(tx: Parameters<Parameters<typeof db.$transaction>[0]>[0], pressId: string, clientId: string) {
+/** Shared transaction-client type — lets ledger-writing helpers run either standalone (own transaction) or nested inside a caller's (invoice-actions.ts's createInvoice). */
+export type Tx = Parameters<Parameters<typeof db.$transaction>[0]>[0];
+
+async function currentBalance(tx: Tx, pressId: string, clientId: string) {
   const last = await tx.clientLedgerEntry.findFirst({
     where: { pressId, clientId },
     orderBy: { entryDate: "desc" },
@@ -24,26 +27,37 @@ async function currentBalance(tx: Parameters<Parameters<typeof db.$transaction>[
   return client.openingBalanceMinor;
 }
 
-/** Posts a debit to the client ledger when an invoice is issued. Called from invoice-actions.ts on finalize. */
-export async function postInvoiceToLedger(invoiceId: string) {
-  return db.$transaction(async (tx) => {
-    const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
-    const balanceBefore = await currentBalance(tx, invoice.pressId, invoice.clientId);
-    const runningBalanceMinor = balanceBefore + invoice.totalMinor;
+/**
+ * The actual debit-posting logic, taking an existing transaction client
+ * rather than opening its own — so invoice-actions.ts's createInvoice can
+ * run "create the Invoice" and "post its ledger debit" as one atomic
+ * $transaction. A bill existing with no matching ledger entry (if the
+ * process died between two separate transactions) is exactly the silent
+ * mismatch the paper ledger books couldn't have — a bill was physically
+ * stapled to its ledger line.
+ */
+export async function postInvoiceToLedgerTx(tx: Tx, invoiceId: string) {
+  const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId } });
+  const balanceBefore = await currentBalance(tx, invoice.pressId, invoice.clientId);
+  const runningBalanceMinor = balanceBefore + invoice.totalMinor;
 
-    return tx.clientLedgerEntry.create({
-      data: {
-        pressId: invoice.pressId,
-        clientId: invoice.clientId,
-        entryType: "INVOICE",
-        invoiceId: invoice.id,
-        debitMinor: invoice.totalMinor,
-        runningBalanceMinor,
-        description: `Invoice ${invoice.invoiceNumber}`,
-        entryDate: invoice.issueDate,
-      },
-    });
+  return tx.clientLedgerEntry.create({
+    data: {
+      pressId: invoice.pressId,
+      clientId: invoice.clientId,
+      entryType: "INVOICE",
+      invoiceId: invoice.id,
+      debitMinor: invoice.totalMinor,
+      runningBalanceMinor,
+      description: `Invoice ${invoice.invoiceNumber}`,
+      entryDate: invoice.issueDate,
+    },
   });
+}
+
+/** Standalone entry point for anything that isn't already inside a transaction with the Invoice it's posting for. */
+export async function postInvoiceToLedger(invoiceId: string) {
+  return db.$transaction((tx) => postInvoiceToLedgerTx(tx, invoiceId));
 }
 
 /**

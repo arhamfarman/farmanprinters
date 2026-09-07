@@ -130,12 +130,30 @@ export const grantClientPortalAccessSchema = z.object({
 });
 export type GrantClientPortalAccessInput = z.infer<typeof grantClientPortalAccessSchema>;
 
-export const createInquirySchema = z.object({
-  contactName: z.string().min(1, "Name is required"),
-  companyName: z.string().optional(),
-  phone: z.string().optional(),
-  email: z.string().email().optional().or(z.literal("")),
-  message: z.string().min(1, "Please describe what you need"),
-  categoryId: z.string().optional(),
+export const inquiryItemInputSchema = z.object({
+  catalogItemId: z.string().min(1),
+  quantity: z.coerce.number().positive(),
+  notes: z.string().optional(), // dimensions/specs, e.g. "20ft x 6ft"
 });
+export type InquiryItemInput = z.infer<typeof inquiryItemInputSchema>;
+
+export const createInquirySchema = z
+  .object({
+    contactName: z.string().min(1, "Name is required"),
+    companyName: z.string().optional(),
+    phone: z.string().optional(),
+    email: z.string().email().optional().or(z.literal("")),
+    message: z.string().optional(),
+    categoryId: z.string().optional(),
+    // Structured catalog selections are optional — a request that's
+    // easier to describe in prose than pick off a price list (a one-off
+    // custom job) can still submit with just `message` and no items.
+    items: z.array(inquiryItemInputSchema).default([]),
+  })
+  // ...but at least one of the two has to carry the actual request, or
+  // staff would get a blank inquiry with nothing to act on.
+  .refine((data) => (data.message && data.message.trim().length > 0) || data.items.length > 0, {
+    message: "Describe what you need, or select at least one catalog item",
+    path: ["message"],
+  });
 export type CreateInquiryInput = z.infer<typeof createInquirySchema>;

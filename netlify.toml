@@ -1,0 +1,38 @@
+# Netlify build configuration for the Next.js App Router app.
+# See PROJECT_CONTEXT.md's "Deployment (Netlify)" section for the full
+# environment-variable checklist and a walkthrough of the Netlify UI setup —
+# this file only covers what's actually configurable from the repo.
+
+[build]
+  # Prisma Client is generated from schema.prisma at build time (its output
+  # isn't committed — see .gitignore) rather than relying solely on
+  # package.json's postinstall hook, so a change to Netlify's own build
+  # pipeline (or someone invoking a different install step upstream)
+  # can't silently ship a build against a stale/missing client.
+  command = "npx prisma generate && npm run build"
+
+  # @netlify/plugin-nextjs (below) is what actually adapts the Next.js
+  # build into Netlify Functions/Edge Functions for SSR, API routes,
+  # middleware, and Server Actions — this `publish` directory is where the
+  # plugin looks for that build output, not a static-site output folder.
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+[functions]
+  # NOTE: Netlify does not expose a configurable timeout for standard
+  # (synchronous) Functions via netlify.toml or any other project file —
+  # it's a hard platform limit tied to your plan: 10s on Starter, 26s on
+  # Pro and above. There's no "set it to 26s" knob to turn; 26s is already
+  # the ceiling on a paid plan, full stop. A `timeout` key here would be
+  # silently ignored by Netlify's build system, so it's deliberately left
+  # out rather than shipping a setting that looks real but does nothing.
+  #
+  # What this means for @react-pdf/renderer (api/documents/[type]/[id]/pdf):
+  # a single-page Bill/Quotation/Challan renders in well under a second, so
+  # it's nowhere near either limit today. If a future multi-page or
+  # image-heavy document render risks exceeding 26s, the actual fix is a
+  # Background Function (different invocation model — no synchronous HTTP
+  # response, the client has to poll or get notified instead) or rendering
+  # via an external worker, not a config value in this file.

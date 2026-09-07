@@ -41,3 +41,12 @@ export async function getMyLedger() {
   const session = requireClientSession(await getSession());
   return getClientLedger(session.clientId);
 }
+
+/** Invoice.clientId is direct (not routed through Order), so this doesn't need to join through orders at all. */
+export async function getMyInvoices() {
+  const session = requireClientSession(await getSession());
+  return db.invoice.findMany({
+    where: { pressId: session.pressId, clientId: session.clientId },
+    orderBy: { issueDate: "desc" },
+  });
+}

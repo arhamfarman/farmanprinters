@@ -3,6 +3,7 @@ import CredentialsProvider from "next-auth/providers/credentials";
 import EmailProvider from "next-auth/providers/email";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import bcrypt from "bcryptjs";
+import nodemailer from "nodemailer";
 import { db } from "@/server/db";
 
 const adapter = PrismaAdapter(db);
@@ -28,6 +29,15 @@ export const authOptions: AuthOptions = {
   adapter,
   session: { strategy: "jwt" },
   pages: { signIn: "/api/auth/signin" },
+  // NOTE on multi-environment hosting (Netlify production + per-branch +
+  // per-PR deploy previews): next-auth v4 has no "trust any host" option
+  // (that's a v5/Auth.js-only field — adding it here doesn't compile
+  // against v4's AuthOptions type, which is why it's not here) — it reads
+  // NEXTAUTH_URL directly. Set NEXTAUTH_URL per Netlify deploy context
+  // (Site settings -> Environment variables -> scope by context) so
+  // Production gets the real domain; ephemeral PR deploy-preview URLs
+  // can't be predicted ahead of time, so sign-in on those specifically is
+  // a known rough edge unless NEXTAUTH_URL is overridden for that branch.
   providers: [
     CredentialsProvider({
       name: "Staff Login",
@@ -56,12 +66,27 @@ export const authOptions: AuthOptions = {
         };
       },
     }),
-    // Client portal sign-in. `server` needs real SMTP creds in production
-    // (see .env.example's EMAIL_SERVER/EMAIL_FROM) — without them this
-    // provider is wired correctly but can't actually send mail.
+    // Client portal sign-in. `sendVerificationRequest` is overridden
+    // instead of relying on the provider's default (which needs a working
+    // `server`) so local dev works with zero SMTP setup: no EMAIL_SERVER
+    // configured -> the link is printed to the server console instead of
+    // emailed. Set a real EMAIL_SERVER (see .env.example) to actually send.
     EmailProvider({
-      server: process.env.EMAIL_SERVER,
-      from: process.env.EMAIL_FROM,
+      from: process.env.EMAIL_FROM ?? "Farman Printing Press <no-reply@farmanpress.com>",
+      async sendVerificationRequest({ identifier, url, provider }) {
+        if (!process.env.EMAIL_SERVER) {
+          console.log(`\n[magic-link] No EMAIL_SERVER configured — sign-in link for ${identifier}:\n  ${url}\n`);
+          return;
+        }
+        const transport = nodemailer.createTransport(process.env.EMAIL_SERVER);
+        await transport.sendMail({
+          to: identifier,
+          from: provider.from,
+          subject: `Sign in to your ${new URL(url).host} client portal`,
+          text: `Sign in to your FarmanPrinters client portal:\n${url}`,
+          html: `<p>Sign in to your FarmanPrinters client portal:</p><p><a href="${url}">${url}</a></p>`,
+        });
+      },
     }),
   ],
   callbacks: {
